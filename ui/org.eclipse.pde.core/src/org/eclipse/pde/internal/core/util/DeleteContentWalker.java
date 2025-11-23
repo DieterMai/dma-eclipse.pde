@@ -1,81 +1,106 @@
 package org.eclipse.pde.internal.core.util;
 
 import java.io.IOException;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.FileVisitor;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.DosFileAttributes;
 
 import org.eclipse.core.runtime.IProgressMonitor;
-import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.SubMonitor;
 
 /**
  * Deletes content of a directory recursively.
  */
 public class DeleteContentWalker implements FileVisitor<Path> {
+	public static void main(String[] args) {
+		new DeleteContentWalker(Path.of("C:\\Users\\maidi\\devel\\temp\\example-ws\\root"), null).walk();
+	}
+
+	public static boolean isWindows = System.getProperty("os.name").startsWith("Win"); //$NON-NLS-1$ //$NON-NLS-2$
 
 	private final Path root;
 	private final IProgressMonitor monitor;
 
 	public DeleteContentWalker(Path root, IProgressMonitor monitor) {
 		this.root = root;
-		if (monitor == null) {
-			this.monitor = new NullProgressMonitor();
-		} else {
-			int count;
-			try {
-				// report progress depending on files in root directory.
-				// limit to 1000 to prevent blocking.
-				count = (int) Files.list(root).limit(1_000).count();
-			} catch (IOException e) {
-				// exception not relevant
-				count = 1;
-			}
-			this.monitor = SubMonitor.convert(monitor, count);
+		this.monitor = SubMonitor.convert(monitor);
+	}
+
+	public void walk() {
+		if (root == null || !Files.exists(root)) {
+			monitor.done();
+			return;
+		}
+
+		try {
+			log("Start walking");
+			Files.walkFileTree(root, this);
+			log("Done walking");
+		} catch (IOException e) {
+			log("Failed walking");
+			e.printStackTrace();
 		}
 	}
 
 	@Override
 	public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-		if (Files.isSymbolicLink(dir)) {
-			Files.deleteIfExists(dir);
-			return FileVisitResult.SKIP_SUBTREE;
-
-		}
+		log("preVisitDirectory: " + dir);
+		// if (Files.isSymbolicLink(dir)) {
+		// Files.deleteIfExists(dir);
+		// return FileVisitResult.SKIP_SUBTREE;
+		//
+		// }
 		return resultIfNotCanceled(FileVisitResult.CONTINUE);
 	}
 
 	@Override
-	public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-		System.out.println("Delete file " + file);
+	public FileVisitResult visitFile(Path path, BasicFileAttributes attrs) throws IOException {
+		log("visitFile: " + path);
 		try {
-			Files.deleteIfExists(file);
-		} catch (IOException e) {
-			System.out.println("failed to delete file.");
-			file.toFile().delete();
+			boolean result = Files.deleteIfExists(path);
+			log("\tDeleted file: " + result);
+		} catch (AccessDeniedException ade) {
+			if (isWindows) {
+				log("\tWindow read only file. Try again");
+				removeReadOnlyWindowsFile(path);
+				log("\tWindow read only file deleted");
+			}
 		}
 
 		return resultIfNotCanceled(FileVisitResult.CONTINUE);
+	}
+
+	private void removeReadOnlyWindowsFile(Path path) throws IOException {
+		DosFileAttributes attrs = Files.readAttributes(path, DosFileAttributes.class);
+		boolean isReadOnly = attrs.isReadOnly();
+		if (isReadOnly) { // TODO fail if not
+			Files.setAttribute(path, "dos:readonly", false); //$NON-NLS-1$
+			Files.delete(path);
+		}
 	}
 
 	@Override
 	public FileVisitResult visitFileFailed(Path file, IOException exc) throws IOException {
+		log("visitFileFailed: " + file);
 		return resultIfNotCanceled(FileVisitResult.CONTINUE);
 	}
 
 	@Override
-	public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
-		if (exc == null) {
-			System.out.println("Delete Dir: " + dir + " - " + Files.deleteIfExists(dir));
-			// Files.deleteIfExists(dir);
-
-			if (dir.getParent().equals(root)) {
-				monitor.worked(1);
+	public FileVisitResult postVisitDirectory(Path path, IOException exc) throws IOException {
+		log("postVisitDirectory: " + path);
+		try {
+			boolean result = Files.deleteIfExists(path);
+			log("\tDeleted dir: " + result);
+		} catch (AccessDeniedException ade) {
+			if (isWindows) {
+				log("\tWindow read only dir. Try again");
+				removeReadOnlyWindowsFile(path);
+				log("\tWindow read only dir deleted");
 			}
-		} else {
-			exc.printStackTrace();
 		}
 		return resultIfNotCanceled(FileVisitResult.CONTINUE);
 	}
@@ -86,11 +111,15 @@ public class DeleteContentWalker implements FileVisitor<Path> {
 	 */
 	private FileVisitResult resultIfNotCanceled(FileVisitResult result) {
 		if (monitor.isCanceled()) {
-			System.out.println("CANCEL");
+			log("CANCEL");
 			return FileVisitResult.TERMINATE;
 		}
 
-		System.out.println("Return " + result);
+		// log("Return " + result);
 		return result;
+	}
+
+	private void log(String s) {
+		System.out.println(s);
 	}
 }
